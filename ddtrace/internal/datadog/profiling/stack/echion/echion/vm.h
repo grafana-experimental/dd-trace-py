@@ -57,7 +57,7 @@ inline bool fast_copy_active = false;
 // User opted out via _DD_PROFILING_STACK_FAST_COPY or set_fast_copy(false).
 inline bool fast_copy_user_disabled = false;
 
-// Sticky: fell back to syscall copy (init failure, foreign handler, warmup miss).
+// Sticky: fell back to syscall copy (init failure or foreign handler).
 inline bool fast_copy_syscall_fallback = false;
 
 inline void

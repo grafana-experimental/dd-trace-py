@@ -91,45 +91,25 @@ def test_fast_copy_memory_disabled() -> None:
     err=None,
 )
 def test_fast_copy_memory_enabled() -> None:
-    """Sampler runs on the syscall copy during warmup, then upgrades to safe_memcpy (PROF-14568)."""
+    """The sampler uses safe_memcpy as soon as it starts."""
     import json
     import os
     import time
     from typing import Any
     from typing import Optional
 
-    # Underscore-prefixed, so only on the _stack submodule (`import *` skips it).
     from ddtrace.internal.datadog.profiling.stack import _stack
     from ddtrace.profiling import profiler
     from ddtrace.trace import tracer
     from tests.profiling.collector import pprof_utils
 
-    _stack._set_fast_copy_warmup_seconds(1.0)
-
     p: profiler.Profiler = profiler.Profiler(tracer=tracer)
     p.start()
 
-    # Require warmup (False) before accepting the upgrade (True), so the brief
-    # constructor-time True isn't mistaken for it.
-    saw_warmup: bool = False
-    saw_upgrade: bool = False
-    deadline: float = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        active: bool = _stack.fast_copy_memory_active()
-        if not saw_warmup:
-            if active is False:
-                saw_warmup = True
-        elif active is True:
-            saw_upgrade = True
-            break
-        time.sleep(0.05)
+    assert _stack.fast_copy_memory_active() is True
 
-    assert saw_warmup, "Expected the sampler to run on the syscall copy during the warmup window"
-    assert saw_upgrade, "Expected the sampler to upgrade to safe_memcpy after warmup"
-
-    # The upgrade flips the flag at the start of a sampling cycle, but the stats it
-    # feeds are only written at the end of that cycle, so stopping here could flush a
-    # window that never saw the upgrade. Wait out an upload interval instead.
+    # Wait for a completed sampling cycle and an upload interval so the
+    # metadata reflects the running sampler.
     time.sleep(2)
     p.stop()
 

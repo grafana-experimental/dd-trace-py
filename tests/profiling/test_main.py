@@ -300,8 +300,6 @@ def test_unarmed_sigsegv_chains_to_crashtracker_and_keeps_handler() -> None:
     import signal
     import time
 
-    import pytest
-
     from ddtrace.internal.native._native import CrashtrackerConfiguration
     from ddtrace.internal.native._native import CrashtrackerMetadata
     from ddtrace.internal.native._native import CrashtrackerReceiverConfig
@@ -329,7 +327,7 @@ def test_unarmed_sigsegv_chains_to_crashtracker_and_keeps_handler() -> None:
     )
 
     # Import after crashtracker_init so the profiler saves Crash Tracking as
-    # the previous SIGSEGV/SIGBUS disposition.
+    # the previous SIGSEGV/SIGBUS handlers.
     from ddtrace.internal.datadog.profiling import ddup
     from ddtrace.internal.datadog.profiling import stack
     from ddtrace.internal.datadog.profiling.stack import _stack
@@ -337,22 +335,11 @@ def test_unarmed_sigsegv_chains_to_crashtracker_and_keeps_handler() -> None:
     assert stack.segv_handler_installed() is True
     ddup.config(env="test", service="test", version="0.0.0")
     ddup.start()
-    _stack._set_fast_copy_warmup_seconds(0.1)
     stack.set_adaptive_sampling(False)
     assert stack.start()
 
     try:
-        saw_warmup: bool = False
-        upgrade_deadline: float = time.monotonic() + 10
-        while time.monotonic() < upgrade_deadline:
-            active: bool = _stack.fast_copy_memory_active()
-            if not saw_warmup:
-                saw_warmup = active is False
-            elif active is True:
-                break
-            time.sleep(0.01)
-        else:
-            pytest.fail("sampler never upgraded to safe_memcpy")
+        assert _stack.fast_copy_memory_active() is True
 
         signal.raise_signal(signal.SIGSEGV)
         assert handled == [signal.SIGSEGV]
