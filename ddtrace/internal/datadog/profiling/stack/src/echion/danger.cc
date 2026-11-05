@@ -18,6 +18,43 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define PYROSCOPE_ASAN 1
+#endif
+#endif
+#if defined(__SANITIZE_ADDRESS__)
+#define PYROSCOPE_ASAN 1
+#endif
+
+#ifdef PYROSCOPE_ASAN
+#include <sanitizer/asan_interface.h>
+
+// Pyroscope patch: a lock-free snapshot can race with the sampled thread
+// returning or freeing an object. Reject poisoned sources before and after
+// copying. Only the speculative source load bypasses instrumentation: it can
+// become poisoned between the check and the load. Destination writes remain
+// checked, and unmapped sources still go through the normal fault handler.
+__attribute__((noinline, no_sanitize_address)) static uint8_t
+read_snapshot_byte(const uint8_t* source)
+{
+    return *static_cast<const volatile uint8_t*>(source);
+}
+
+static bool
+copy_snapshot_chunk(uint8_t* destination, const uint8_t* source, size_t size)
+{
+    auto* address = const_cast<uint8_t*>(source);
+    if (__asan_region_is_poisoned(address, size) != nullptr) {
+        return false;
+    }
+    for (size_t i = 0; i < size; ++i) {
+        destination[i] = read_snapshot_byte(source + i);
+    }
+    return __asan_region_is_poisoned(address, size) == nullptr;
+}
+#endif
+
 // Lock-free atomics are required to be async-signal-safe.
 static_assert(std::atomic<int>::is_always_lock_free, "std::atomic<int> must be lock-free for use in signal handlers");
 
@@ -398,11 +435,18 @@ safe_memcpy(void* dst, const void* src, size_t n)
           page_size - (static_cast<uintptr_t>(reinterpret_cast<uintptr_t>(d)) & (page_size - 1)));
         safe_memcpy_return_t chunk = std::min(rem, std::min(to_src_pg, to_dst_pg));
 
+#ifdef PYROSCOPE_ASAN
+        if (!copy_snapshot_chunk(d, s, static_cast<size_t>(chunk))) {
+            t_faulted = true;
+            goto landing;
+        }
+#else
         // Optional early probe to fault before entering large memcpy
         (void)*static_cast<volatile const uint8_t*>(s);
 
         // If this faults, we'll siglongjmp back to the sigsetjmp above.
         (void)memcpy(d, s, static_cast<size_t>(chunk));
+#endif
 
         d += chunk;
         s += chunk;

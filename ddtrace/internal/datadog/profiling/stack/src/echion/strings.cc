@@ -3,12 +3,13 @@
 std::unique_ptr<unsigned char[]>
 pybytes_to_bytes_and_size(PyObject* bytes_addr, Py_ssize_t* size)
 {
-    PyBytesObject bytes;
+    // Pyroscope patch: small bytes objects do not include the struct padding.
+    PyVarObject bytes;
 
     if (copy_type(bytes_addr, bytes))
         return nullptr;
 
-    *size = bytes.ob_base.ob_size;
+    *size = bytes.ob_size;
     if (*size < 0 || *size > MAX_STRING_SIZE)
         return nullptr;
 
@@ -21,22 +22,30 @@ pybytes_to_bytes_and_size(PyObject* bytes_addr, Py_ssize_t* size)
 Result<std::string>
 pyunicode_to_utf8(PyObject* str_addr)
 {
-    PyUnicodeObject str;
-    if (copy_type(str_addr, str))
+    // Pyroscope patch: compact ASCII strings only allocate PyASCIIObject plus
+    // their bytes. Copying a full PyUnicodeObject overreads short strings.
+    PyASCIIObject ascii;
+    if (copy_type(str_addr, ascii))
         return ErrorKind::PyUnicodeError;
-
-    PyASCIIObject& ascii = str._base._base;
 
     if (ascii.state.kind != 1)
         return ErrorKind::PyUnicodeError;
 
-    const char* data = ascii.state.compact
-                         ? reinterpret_cast<const char*>(reinterpret_cast<const uint8_t*>(str_addr) + sizeof(ascii))
-                         : static_cast<const char*>(str._base.utf8);
-    if (data == NULL)
+    const char* data;
+    Py_ssize_t size;
+    if (ascii.state.compact && ascii.state.ascii) {
+        data = reinterpret_cast<const char*>(str_addr) + sizeof(ascii);
+        size = ascii.length;
+    } else {
+        PyCompactUnicodeObject compact;
+        if (copy_type(str_addr, compact))
+            return ErrorKind::PyUnicodeError;
+        data = compact.utf8;
+        size = compact.utf8_length;
+    }
+    if (data == nullptr)
         return ErrorKind::PyUnicodeError;
 
-    Py_ssize_t size = ascii.state.compact ? ascii.length : str._base.utf8_length;
     if (size < 0 || size > 1024)
         return ErrorKind::PyUnicodeError;
 
